@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stack de referencia: instancia EC2 con IAM role de minimo privilegio
+  para acceso a un bucket S3, y alarmas de CloudWatch para monitoreo
+  basico de CPU y estado de la instancia.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    Description: Nombre del entorno (dev, staging, prod)
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+    Description: Tipo de instancia EC2
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Key pair existente para acceso SSH a la instancia
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: AMI resuelta automaticamente via SSM Parameter Store
+
+  AlarmNotificationEmail:
+    Type: String
+    Description: Email que recibira las notificaciones de alarmas de CloudWatch
+
+Resources:
+
+  # --- S3 Bucket para datos de la aplicacion ---
+  AppDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${EnvironmentName}-app-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # --- IAM Role de minimo privilegio para la EC2 ---
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-ec2-s3-access-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ReadWriteAppBucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt AppDataBucket.Arn
+                  - !Sub '${AppDataBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # --- Security Group ---
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'SG para instancia ${EnvironmentName} - SSH restringido'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: 'SSH - restringir a IP conocida en produccion'
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # --- Instancia EC2 ---
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-app-instance'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          echo "Instancia ${EnvironmentName} inicializada correctamente" > /var/log/init-status.log
+
+  # --- SNS Topic para notificaciones de alarmas ---
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${EnvironmentName}-alarm-notifications'
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlarmNotificationEmail
+
+  # --- Alarma de CPU alta ---
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-high-cpu-utilization'
+      AlarmDescription: 'Se dispara cuando el uso de CPU supera el 80% durante 10 minutos'
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      TreatMissingData: notBreaching
+
+  # --- Alarma de status check fallido ---
+  StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-status-check-failed'
+      AlarmDescription: 'Se dispara si la instancia falla el status check de AWS'
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      TreatMissingData: notBreaching
+
+Outputs:
+  InstanceId:
+    Description: ID de la instancia EC2 creada
+    Value: !Ref AppInstance
+
+  BucketName:
+    Description: Nombre del bucket S3 creado
+    Value: !Ref AppDataBucket
+
+  IAMRoleArn:
+    Description: ARN del IAM role asociado a la instancia
+    Value: !GetAtt EC2InstanceRole.Arn
+
+  AlarmTopicArn:
+    Description: ARN del topic SNS para notificaciones de alarmas
+    Value: !Ref AlarmNotificationTopic
