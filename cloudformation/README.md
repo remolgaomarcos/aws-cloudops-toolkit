@@ -1,22 +1,22 @@
 # EC2 + S3 + CloudWatch Monitoring Stack
 
-Template de CloudFormation que despliega una arquitectura de referencia en AWS,
-aplicando buenas prácticas de seguridad y observabilidad.
+CloudFormation template that deploys a reference architecture on AWS,
+applying security and observability best practices.
 
-## Qué incluye
+## What it includes
 
-- **EC2**: instancia con AMI resuelta automáticamente vía SSM Parameter Store
-  (siempre la última Amazon Linux 2023 disponible, sin hardcodear IDs de AMI).
-- **IAM Role de mínimo privilegio**: la instancia solo puede leer/escribir en
-  su bucket S3 asociado y publicar métricas/logs — nada más.
-- **S3**: bucket con versionado, cifrado por defecto (SSE-S3) y bloqueo total
-  de acceso público.
-- **CloudWatch Alarms**: alertas de CPU alta (>80% sostenido) y de status
-  check fallido, notificando por email vía SNS.
-- **Security Group**: acceso SSH restringido a un solo puerto (pensado para
-  ajustarse a un CIDR específico en producción).
+- **EC2**: instance with AMI automatically resolved via SSM Parameter Store
+  (always the latest available Amazon Linux 2023, no hardcoded AMI IDs).
+- **Least-privilege IAM Role**: the instance can only read/write to its
+  associated S3 bucket and publish metrics/logs — nothing else.
+- **S3**: bucket with versioning enabled, default encryption (SSE-S3), and
+  full public access block.
+- **CloudWatch Alarms**: alerts for high CPU (>80% sustained) and failed
+  status checks, notifying via email through SNS.
+- **Security Group**: SSH access restricted to a single port (meant to be
+  scoped to a specific CIDR in production).
 
-## Uso
+## Usage
 
 ```bash
 aws cloudformation deploy \
@@ -24,23 +24,23 @@ aws cloudformation deploy \
   --stack-name dev-cloudops-stack \
   --parameter-overrides \
       EnvironmentName=dev \
-      KeyPairName=mi-keypair \
-      AlarmNotificationEmail=tu-email@ejemplo.com \
+      KeyPairName=your-keypair \
+      AlarmNotificationEmail=your-email@example.com \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-## Parámetros
+## Parameters
 
-| Parámetro | Descripción | Default |
+| Parameter | Description | Default |
 |---|---|---|
-| `EnvironmentName` | Prefijo de entorno (dev/staging/prod) | `dev` |
-| `InstanceType` | Tipo de instancia EC2 | `t3.micro` |
-| `KeyPairName` | Key pair existente para SSH | — |
-| `AlarmNotificationEmail` | Email para alertas de CloudWatch | — |
+| `EnvironmentName` | Environment prefix (dev/staging/prod) | `dev` |
+| `InstanceType` | EC2 instance type | `t3.micro` |
+| `KeyPairName` | Existing key pair for SSH access | — |
+| `AlarmNotificationEmail` | Email for CloudWatch alerts | — |
 
-## Por qué este diseño
+## Design rationale
 
-Este template refleja el enfoque que aplico en entornos productivos: roles
-de IAM acotados al mínimo necesario, cifrado y bloqueo de acceso público por
-defecto en S3, y monitoreo activo desde el día uno — en vez de agregarlo
-después como una idea tardía.
+This template reflects the approach I apply in production environments:
+IAM roles scoped to the minimum required, encryption and public access
+blocking enabled by default on S3, and active monitoring from day one —
+rather than bolted on as an afterthought.
